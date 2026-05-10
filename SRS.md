@@ -643,4 +643,207 @@ iOS 端對應實作位置：
 
 ---
 
+## 附錄 B：Xcode 專案設定與建置指南
+
+本 repo 採 **Swift Package (SwiftPM)** 結構，library 名稱 `HermesMobile`。SwiftPM library 本身**無法**直接做為 iOS app（沒有 `@main` + Info.plist + signing），需在 Xcode 建一個 thin App target 包一層。完整步驟如下。
+
+### B.1 取得 source
+
+V1 MVP 的初始 commit 推到 feature branch `claude/initial-project-setup-51stT`（main 受保護擋下直接 push）。在本機合併：
+
+```bash
+git checkout main
+git pull
+git merge --ff-only origin/claude/initial-project-setup-51stT
+# 或在 GitHub 上開 PR：claude/initial-project-setup-51stT → main，merge 後再 pull
+```
+
+驗證 `Package.swift`、`Sources/HermesMobile/`、`Tests/HermesMobileTests/` 都在 root。
+
+### B.2 用 Xcode 開 Package.swift
+
+需要 **Xcode 15+**（含 Swift 5.9 與 iOS 17 SDK）。
+
+```bash
+open Package.swift
+```
+
+Xcode 會把整個目錄當作 Swift Package workspace 開啟。第一次開啟時會自動 resolve dependencies（`swift-markdown-ui`），需要網路。
+
+此時可以直接 build library target：
+- Scheme 選 `HermesMobile`
+- Destination 選任何 iOS Simulator
+- ⌘+B
+
+也可以跑單元測試：
+- ⌘+U
+
+或從 CLI：
+
+```bash
+xcodebuild test \
+  -scheme HermesMobile \
+  -destination 'platform=iOS Simulator,name=iPhone 15'
+```
+
+### B.3 建立 iOS App target
+
+Library 只能跑測試、不能裝到手機。建一個 App target：
+
+1. Xcode 選單 `File → New → Project…`
+2. 選 `iOS → App`
+3. 設定：
+   - Product Name: `HermesMobile`
+   - Team: 你的 Apple Developer team
+   - Organization Identifier: `com.anderson`（或自選）
+   - Bundle Identifier 將自動成為 `com.anderson.hermesmobile`
+   - Interface: **SwiftUI**
+   - Language: **Swift**
+   - 取消勾選 Include Tests（測試已在 SwiftPM 提供）
+4. 存到一個**獨立目錄**（例如 `~/code/HermesMobileApp`），**不要**存進本 repo（否則會跟 SwiftPM 結構衝突）
+
+### B.4 把本 repo 的 Package 加進 App target
+
+在新建的 App project：
+
+1. 選 project（藍色頂層 icon）→ 右側 `Package Dependencies` tab → `+`
+2. 點 `Add Local…` → 選擇本 repo 的根目錄（包含 `Package.swift` 那層）
+3. Add Package
+4. 選 `HermesMobile` library，加到 `HermesMobile` app target
+
+### B.5 改寫 App entry point
+
+打開 App target 自動產生的 `HermesMobileApp.swift`（或類似名稱），整檔覆蓋成：
+
+```swift
+import SwiftUI
+import HermesMobile
+
+@main
+struct HermesMobileAppEntry: App {
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+        }
+    }
+}
+```
+
+刪除自動生成的 `ContentView.swift`（不需要）。
+
+### B.6 設定 Info.plist 與 ATS 例外
+
+App target 的 `Info.plist`（或 `Project → Info → Custom iOS Target Properties`）加入 SRS §9.3 列出的 ATS 例外：
+
+```xml
+<key>NSAppTransportSecurity</key>
+<dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <false/>
+    <key>NSExceptionDomains</key>
+    <dict>
+        <key>ts.net</key>
+        <dict>
+            <key>NSIncludesSubdomains</key>
+            <true/>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key>
+            <true/>
+        </dict>
+    </dict>
+</dict>
+```
+
+⚠️ **絕不**設 `NSAllowsArbitraryLoads = true`。例外網域只開 Tailscale MagicDNS。
+
+如果 Tailscale IP 寫死（如 `100.x.x.x`）而非用 MagicDNS hostname，需另外加 IP 例外（不建議；改用 MagicDNS）。
+
+### B.7 簽署設定
+
+App target → `Signing & Capabilities`：
+
+- ✅ Automatically manage signing
+- Team: 你的 Apple Developer team
+- Bundle Identifier: `com.anderson.hermesmobile`
+
+如果用 Personal Team（免付費）只能 7 天為限部署到實機；TestFlight / Ad-hoc 需付費 Apple Developer Program ($99/年)。
+
+Capabilities 不需要任何特殊權限（Keychain 預設可用、Network 預設可用）。
+
+### B.8 在 Simulator 跑
+
+1. Scheme 選新建立的 App
+2. Destination 選 iPhone 15 (iOS 17.x) Simulator
+3. ⌘+R
+
+第一次啟動會看到 Setup 頁，輸入：
+- Server URL: `http://<tailscale-ip>:8787`（Mac mini 上 hermes-webui 的位置）
+- 密碼: `HERMES_WEBUI_PASSWORD` 對應的值
+
+⚠️ Simulator **沒有** Tailscale，所以連 Tailscale IP 會失敗。Simulator 測試請改：
+- 在 Mac 同網段啟用 hermes-webui，用 Mac 的 LAN IP（如 `http://192.168.x.x:8787`）
+- 或先用 `ssh -L 8787:localhost:8787 mac-mini` 把 server 轉發到 localhost，Simulator 連 `http://localhost:8787`
+
+### B.9 在實機跑
+
+實機需要：
+1. iPhone / iPad 已加入同一個 Tailscale tailnet（裝 Tailscale iOS app 並登入）
+2. ACL 允許該裝置存取 Mac mini 的 8787 port
+3. Xcode → 連接 iPhone → Trust this computer
+4. Destination 選實機 → ⌘+R
+5. iPhone 設定 → General → VPN & Device Management → 信任你的 developer 憑證
+6. 啟動 app，輸入 Tailscale MagicDNS hostname（如 `http://mac-mini.tail-xxxx.ts.net:8787`）
+
+### B.10 TestFlight 部署
+
+V1 走 TestFlight 內部測試（單使用者用，不上架 App Store）：
+
+1. Bundle Identifier 在 App Store Connect 註冊
+2. Xcode → `Product → Archive`（Destination 必須是 `Any iOS Device`，不能是 Simulator）
+3. Archive 完成後 Organizer 開啟 → 選 `Distribute App → App Store Connect → Upload`
+4. App Store Connect → TestFlight tab → 加入自己為 internal tester
+5. iPhone 裝 TestFlight app，接受邀請後安裝
+
+每次改 code 想更新，bump `CFBundleVersion`（build number）後再 Archive + Upload。
+
+### B.11 跑測試
+
+```bash
+xcodebuild test \
+  -scheme HermesMobile \
+  -destination 'platform=iOS Simulator,name=iPhone 15'
+```
+
+或在 Xcode 內 `⌘+U`。
+
+預期通過的測試：
+- `APIClientTests`：Endpoint 路徑、Codable snake_case、status 碼映射
+- `SSEClientTests`：所有 event 解析（含 RULE-9 pattern_keys）
+- `InMemorySecretStoreTests`：CRUD
+- `KeychainStoreTests`：實機/簽署 simulator 上會跑、未簽署會 skip
+- `ChatViewModelTests`：send → token → done 流程、error、approval
+- `SessionListViewModelTests`：RULE-1 三種 case
+- `AppStateTests`：RULE-6（boot 不 auto-create）
+
+### B.12 常見坑速查
+
+| 症狀 | 可能原因 | 解法 |
+|------|---------|------|
+| `import HermesMobile` 找不到 | App target 沒加 package dependency | 重做 B.4 |
+| 連 Simulator 跑開 app 但 Setup 連線一直失敗 | Simulator 不在 tailnet | 用 LAN IP 或 SSH tunnel（B.8） |
+| `MarkdownUI` resolve 失敗 | 網路 / 版本相依問題 | Xcode → File → Packages → Reset Package Caches |
+| Keychain 寫入失敗 | Simulator 未簽署 | 設定 Signing Team；或用 InMemorySecretStore（DEBUG only） |
+| SSE 在 30 秒後斷掉 | iOS 進背景時 URLSession 會暫停 | 預期行為；回前景時 ChatViewModel.handleForeground 自動處理 |
+| Build fail: `Observable` macro | Xcode 版本太舊 | 升級到 Xcode 15+ |
+| `@MainActor` 隔離錯誤 | Swift concurrency strict mode 開了 | Build Settings → Strict Concurrency Checking 設 `Minimal` 或 `Targeted` |
+
+### B.13 後續開發節奏
+
+- 每次改 ViewModel：先確認沒違反 RULE-1 ~ RULE-iOS-C（CLAUDE.md §2）
+- 每次改 SSE：跑 `SSEClientTests`
+- 每次改 Setup / Session 流程：跑 `AppStateTests` + `SessionListViewModelTests` 確認 RULE-6 / RULE-1 不被破壞
+- 新功能：在 `Features/{Name}/` 開新資料夾，View + ViewModel 配對
+- Library 可以獨立 build / 跑 test，App target 只是 entry point；改 library 不需要動 App project
+
+---
+
 **文件結束**
